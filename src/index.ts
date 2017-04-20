@@ -1,4 +1,5 @@
 import * as _ from 'lodash';
+import * as sylvester from 'sylvester-es6';
 
 const CANVAS_CSS_SIZE = 250;
 const CANVAS_PX_SIZE = 500;
@@ -16,9 +17,17 @@ function main() {
   canvas.height = CANVAS_PX_SIZE;
   canvas.style.width = `${CANVAS_CSS_SIZE / 2}px`;
   canvas.style.height = `${CANVAS_CSS_SIZE / 2}px`;
-
   const ctx = canvas.getContext('2d');
-  if (!ctx) {
+
+  const canvas3d = document.createElement('canvas');
+  document.body.appendChild(canvas3d);
+  canvas3d.width = CANVAS_PX_SIZE;
+  canvas3d.height = CANVAS_PX_SIZE;
+  canvas3d.style.width = `${CANVAS_CSS_SIZE / 2}px`;
+  canvas3d.style.height = `${CANVAS_CSS_SIZE / 2}px`;
+  const ctx3d = canvas3d.getContext('webgl');
+
+  if (!ctx || !ctx3d) {
     console.error('no ctx');
     return;
   }
@@ -61,6 +70,134 @@ function main() {
 
   fillPolygons(ctx, Array.from(lineToPolygons(horizontal, 5)), 'blue', true);
   drawPoints(ctx, horizontal);
+
+  {
+    const gl = ctx3d;
+    
+    const fragmentShaderSource =
+`
+  void main(void) {
+    gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+  }
+`;
+
+    const vertexShaderSource =
+`
+  attribute vec3 aVertexPosition;
+
+  uniform mat4 uMVMatrix;
+  uniform mat4 uPMatrix;
+  
+  void main(void) {
+    gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+  }
+`;
+
+    const createShader = (source: string, type: number) => {
+      const shader = gl.createShader(type);
+
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+
+      // See if it compiled successfully
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {  
+        console.log('An error occurred compiling the shaders: ' + gl.getShaderInfoLog(shader));  
+        gl.deleteShader(shader);
+        return null;  
+      }
+        
+      return shader;
+    };
+
+    const fragmentShader = createShader(fragmentShaderSource, gl.FRAGMENT_SHADER);
+    const vertexShader = createShader(vertexShaderSource, gl.VERTEX_SHADER);
+
+    gl.clearColor(0.0, 0.0, 0.0, 1.0);
+    // Enable depth testing
+    gl.enable(gl.DEPTH_TEST);
+    // Near things obscure far things
+    gl.depthFunc(gl.LEQUAL);
+    // Clear the color as well as the depth buffer.
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+
+    const squareVerticesBuffer = gl.createBuffer();
+    {
+        // from  initBuffers() {
+
+        // Select the squareVerticesBuffer as the one to apply vertex
+        // operations to from here out.
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, squareVerticesBuffer);
+
+        // Now create an array of vertices for the square. Note that the Z
+        // coordinate is always 0 here.
+
+        var vertices = [
+          1.0,  1.0,  0.0,
+          -1.0, 1.0,  0.0,
+          1.0,  -1.0, 0.0,
+          -1.0, -1.0, 0.0
+        ];
+
+        // Now pass the list of vertices into WebGL to build the shape. We
+        // do this by creating a Float32Array from the JavaScript array,
+        // then use it to fill the current vertex buffer.
+
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+    }
+      
+      var shaderProgram;
+      // var vertexPositionAttribute;
+      var perspectiveMatrix;
+
+      var horizAspect = 480.0/640.0;
+
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  
+      const perspectiveMatrix = makePerspective(45, 640.0/480.0, 0.1, 100.0);
+      
+      let mvMatrix = sylvester.Matrix.I(4);
+      const v = [-0.0, 0.0, -6.0];
+      mvMatrix = mvMatrix.x(sylvester.Matrix.Translation(new sylvester.Vector([v[0], v[1], v[2]])).ensure4x4());
+      // mvTranslate([-0.0, 0.0, -6.0]);
+      
+      const shaderProgram = gl.createProgram();
+      gl.attachShader(shaderProgram, vertexShader);
+      gl.attachShader(shaderProgram, fragmentShader);
+      gl.linkProgram(shaderProgram);
+
+      // If creating the shader program failed, alert
+
+      if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+        alert("Unable to initialize the shader program: " + gl.getProgramInfoLog(shaderProgram));
+      }
+
+      gl.useProgram(shaderProgram);
+
+      const vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+      gl.enableVertexAttribArray(vertexPositionAttribute);
+
+      gl.bindBuffer(gl.ARRAY_BUFFER, squareVerticesBuffer);
+      gl.vertexAttribPointer(vertexPositionAttribute, 3, gl.FLOAT, false, 0, 0);
+
+      const pUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+      if (!pUniform) {
+        console.error('!pUniform');
+        return
+      }
+      gl.uniformMatrix4fv(pUniform, false, new Float32Array(perspectiveMatrix.flatten()));
+
+      const mvUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+      if (!mvUniform) {
+        console.error('!mvUniform');
+        return
+      }
+      gl.uniformMatrix4fv(mvUniform, false, new Float32Array(mvMatrix.flatten()));
+
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+  
 }
 
 function slope(a: Point, b: Point): number | undefined {
@@ -153,6 +290,38 @@ function fillPolygon(ctx: CanvasRenderingContext2D, polygon: Point[], color: str
   ctx.closePath();
   ctx.fillStyle = color;
   ctx.fill();
+}
+
+// from glUtils
+function makePerspective(fovy: number, aspect: number, znear: number, zfar: number)
+{
+    var ymax = znear * Math.tan(fovy * Math.PI / 360.0);
+    var ymin = -ymax;
+    var xmin = ymin * aspect;
+    var xmax = ymax * aspect;
+
+    return makeFrustum(xmin, xmax, ymin, ymax, znear, zfar);
+}
+
+// from glUtils
+//
+// glFrustum
+//
+function makeFrustum(left: number, right: number,
+                     bottom: number, top: number,
+                     znear: number, zfar: number)
+{
+    var X = 2*znear/(right-left);
+    var Y = 2*znear/(top-bottom);
+    var A = (right+left)/(right-left);
+    var B = (top+bottom)/(top-bottom);
+    var C = -(zfar+znear)/(zfar-znear);
+    var D = -2*zfar*znear/(zfar-znear);
+
+    return new sylvester.Matrix([[X, 0, A, 0],
+               [0, Y, B, 0],
+               [0, 0, C, D],
+               [0, 0, -1, 0]]);
 }
 
 main();

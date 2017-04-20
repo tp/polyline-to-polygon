@@ -12,6 +12,7 @@
     "@types/lodash": "^4.14.62",
     "budo": "^9.4.7",
     "lodash": "^4.17.4",
+    "sylvester-es6": "^0.0.2",
     "typescript": "^2.2.2"
   }
 }
